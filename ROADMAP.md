@@ -143,18 +143,126 @@ Status legend: `[ ]` = Not started · `[~]` = In progress · `[x]` = Complete
 
 ---
 
-## Phase 7 — Observability and Cluster Monitoring
+## Phase 7 — Phoenix LiveView Dashboard
 
-> Objective: Provide visibility into the distributed agent's state, hardware usage, and memory evolution.
+> Objective: Provide a real-time, browser-based command centre on the Hub node to monitor every dimension of the distributed agent network — cluster health, agent memory, workflow execution, and skill evolution.
 
-- [ ] Add `Phoenix` and `Phoenix.LiveView` to the Hub's supervision tree
-- [ ] Build LiveView: **Cluster Health** — real-time view of all connected nodes, their `NODE_ROLE`, and current `Nx.Serving` load
-- [ ] Build LiveView: **Agent Memory Explorer** — view and edit the current `Scratchpad` contents per agent
-- [ ] Build LiveView: **Workflow Log** — display active and completed Reactor workflows with step-level timing
-- [ ] Build LiveView: **Skill Registry** — list all dynamically compiled skills with execution counts and success rates
-- [ ] Add Telemetry events to `Reactor` steps for real-time dashboard updates
+### 7.0 — Project Setup
 
-**Exit Criteria:** Navigating to `http://hub-tailscale-ip:4000` shows the live cluster state and agent memory.
+- [ ] Add `phoenix`, `phoenix_live_view`, `phoenix_html`, `phoenix_ecto`, `esbuild`, `tailwind` to `mix.exs`
+- [ ] Add `HermesBeamWeb.Endpoint` and `HermesBeamWeb.Telemetry` as Hub-only children in `HermesBeam.Application`
+- [ ] Configure `config/dev.exs` and `config/prod.exs` with Endpoint settings (port `4000`, `LiveView` signing salt)
+- [ ] Create `lib/hermes_beam_web/` directory with `router.ex`, `endpoint.ex`, `telemetry.ex`
+- [ ] Set up `assets/` with Tailwind CSS for component styling
+- [ ] Add a root layout `lib/hermes_beam_web/components/layouts/root.html.heex` with navbar links to all dashboards
+
+**Exit Criteria:** Navigating to `http://hub-tailscale-ip:4000` returns a styled HTML page with navigation links.
+
+---
+
+### 7.1 — Cluster Health Dashboard
+
+> Real-time view of every Erlang node, its hardware tier, active model servings, and GPU memory pressure.
+
+**Data sources:**
+- `Node.list/0` — lists all connected Erlang nodes
+- `:rpc.call(node, System, :schedulers_online, [])` — remote CPU core count
+- `:rpc.call(node, Application, :fetch_env!, [:hermes_beam, :hardware_topology], [])` — remote `NODE_ROLE`
+- Custom `HermesBeam.Telemetry.NodeMetrics` GenServer — polls EXLA memory stats per node
+
+**LiveView components:**
+- [ ] Create `HermesBeamWeb.Live.ClusterLive` (`/dashboard/cluster`)
+- [ ] Node card grid showing per-node: name, Tailscale IP, `NODE_ROLE`, status (`:online` / `:degraded`)
+- [ ] `Nx.Serving` table per node: tier name, active batch count, `max_new_tokens`, model repo
+- [ ] Live sparkline per node showing inference requests per minute (via `:telemetry` events)
+- [ ] Red badge auto-appears on a node card if it drops from `Node.list/0`
+- [ ] Create `HermesBeam.Telemetry.NodeMetrics` GenServer that broadcasts `Phoenix.PubSub` events every 2 seconds
+
+**Exit Criteria:** When a Worker Mac Mini is unplugged, its card turns red within 5 seconds with no page refresh.
+
+---
+
+### 7.2 — Agent Memory Explorer
+
+> Browse, search, and manually edit the bounded `Scratchpad` and explore the full episodic `Memory` vector store.
+
+**Data sources:**
+- `HermesBeam.Memory.Scratchpad` Ash Resource (direct DB read)
+- `HermesBeam.Memory` Ash Resource (pgvector nearest-neighbour search)
+
+**LiveView components:**
+- [ ] Create `HermesBeamWeb.Live.MemoryLive` (`/dashboard/memory`)
+- [ ] Scratchpad panel: two side-by-side `<textarea>` elements for `memory_text` and `user_text` with live character count and colour-coded limit warnings (green → yellow → red as limit approaches)
+- [ ] "Save" button calls `Ash.update(scratchpad, :curate_memory, ...)` directly, with inline validation error display
+- [ ] Episodic memory search bar: user types a query, LiveView calls `Memory.recall_similar/1` and renders the top-5 results as cards showing content, type badge, and timestamp
+- [ ] Each memory card has a "Delete" action calling `Ash.destroy/1`
+- [ ] Memory type filter tabs: `All | :observation | :reflection | :user_fact`
+
+**Exit Criteria:** An operator can read, search, edit, and delete agent memories directly from the browser without touching IEx.
+
+---
+
+### 7.3 — Reactor Workflow Log
+
+> A live feed of every Reactor workflow execution — running, completed, and failed — with step-level timing and error details.
+
+**Data sources:**
+- Custom `:telemetry` events attached to `Reactor` steps
+- `HermesBeam.WorkflowLog` Ash Resource (new — stores workflow execution records in Postgres)
+
+**New Ash Resource:**
+- [ ] Create `HermesBeam.WorkflowLog` resource
+  - [ ] `workflow_name` (string), `status` (atom: `:running`, `:completed`, `:failed`)
+  - [ ] `steps` (map) — step name → `%{started_at, finished_at, status, error}`
+  - [ ] `started_at`, `finished_at` timestamps
+  - [ ] `:create`, `:update_step`, `:complete`, `:fail` actions
+
+**LiveView components:**
+- [ ] Create `HermesBeamWeb.Live.WorkflowLive` (`/dashboard/workflows`)
+- [ ] Live table of recent workflow runs, sorted by `started_at` descending, paginated (25 per page)
+- [ ] Status badge column: green `completed`, blue `running`, red `failed`
+- [ ] Row expandable: clicking a row reveals step-level timeline with duration per step rendered as a horizontal bar chart
+- [ ] Live counter at the top: `Running: N | Completed today: N | Failed today: N`
+- [ ] "Retry" button on failed workflow rows — re-enqueues the Reactor workflow with original inputs
+- [ ] Add `:telemetry` `attach/4` calls to `AgentLoop`, `IntelligentRouter`, `SyntheticDataReactor` to emit step start/stop events
+
+**Exit Criteria:** Running `Reactor.run(HermesBeam.Workflows.AgentLoop, ...)` in IEx causes a new row to appear live in the dashboard within 1 second.
+
+---
+
+### 7.4 — Skill Registry
+
+> A living catalogue of every dynamically compiled Elixir skill the agent has learned, with usage stats and the ability to view, edit, and delete skills.
+
+**Data sources:**
+- `HermesBeam.Skill` Ash Resource
+
+**LiveView components:**
+- [ ] Create `HermesBeamWeb.Live.SkillsLive` (`/dashboard/skills`)
+- [ ] Card grid of all skills: name, description, `execution_count`, `success_rate` as a percentage badge
+- [ ] Clicking a card opens a modal with a syntax-highlighted read-only code viewer for `elixir_code`
+- [ ] "Edit" mode in the modal: operator can manually amend the code and click "Recompile" which calls `:refine_skill` Ash Action
+- [ ] Inline compilation error display if `Code.compile_string/1` fails
+- [ ] "Delete" button in modal triggers `Ash.destroy/1` and unloads the BEAM module
+- [ ] Sort controls: by `name`, `execution_count`, `success_rate`, `inserted_at`
+- [ ] Filter: `All | High Success (>90%) | Needs Improvement (<70%) | Never Used`
+
+**Exit Criteria:** After the agent autonomously creates a new skill (Phase 3), the skill appears in the registry within 2 seconds with `execution_count: 0`.
+
+---
+
+### 7.5 — Synthetic Data Monitor
+
+> Track the agent's self-improvement progress: which concepts have been explored, how many synthetic memories were generated, and how they affected recall quality.
+
+**LiveView components:**
+- [ ] Create `HermesBeamWeb.Live.SyntheticLive` (`/dashboard/synthetic`)
+- [ ] Bar chart: top 10 most explored concepts by synthetic memory count
+- [ ] Memory growth chart: line graph of total episodic `Memory` count over the past 7 days
+- [ ] "Trigger Run" form: operator inputs a concept and manually dispatches a `SyntheticDataReactor` workflow
+- [ ] Live feed of the most recently generated synthetic memories (last 10), auto-updating via PubSub
+
+**Exit Criteria:** The dashboard accurately reflects the total memory count from Postgres and updates in real-time as synthetic data is generated.
 
 ---
 
