@@ -1,0 +1,214 @@
+# Hermes BEAM — Interactive Dashboard
+
+```elixir
+Mix.install(
+  [
+    {:hermes_beam, path: Path.join(__DIR__, ".."), env: :dev}
+  ],
+  config_path: :hermes_beam,
+  lockfile: :hermes_beam
+)
+```
+
+## Welcome to Hermes BEAM
+
+This notebook is the **primary observability interface** for your distributed AI agent cluster.
+Connect to a running Hub node via the **Attached Node** runtime and every cell below
+executes in the live cluster context — no REST API, no separate service, just
+direct function calls into the running BEAM.
+
+> **How to connect:**
+> 1. Start the Hub: `bash bin/start_node.sh` (with `NODE_TYPE=hub`)
+> 2. Run: `bash bin/livebook_connect.sh` to launch Livebook pre-attached to the Hub
+> 3. Open this notebook — the runtime is pre-configured
+
+---
+
+## 1  Cluster Status
+
+```elixir
+connected_nodes = [Node.self() | Node.list()]
+
+IO.puts("\n=== Connected Nodes ===")
+for node <- connected_nodes do
+  role =
+    try do
+      :rpc.call(node, Application, :fetch_env!, [:hermes_beam, :topology], 5_000)
+      |> Keyword.get(:role, "unknown")
+    catch
+      _, _ -> "unreachable"
+    end
+
+  status = if node == Node.self() or node in Node.list(), do: "✅ online", else: "❌ offline"
+  IO.puts("  #{node}  |  role: #{role}  |  #{status}")
+end
+
+connected_nodes
+```
+
+```elixir
+tiers_by_node =
+  for node <- connected_nodes, into: %{} do
+    tiers =
+      try do
+        topology = :rpc.call(node, Application, :fetch_env!, [:hermes_beam, :topology], 5_000)
+        Keyword.get(topology, :active_tiers, [])
+      catch
+        _, _ -> []
+      end
+    {node, tiers}
+  end
+
+IO.puts("\n=== Nx.Serving Tiers ===")
+for {node, tiers} <- tiers_by_node do
+  IO.puts("  Node: #{node}")
+  for {tier, model} <- tiers, do: IO.puts("    #{tier}  ->  #{model}")
+end
+
+tiers_by_node
+```
+
+---
+
+## 2  Agent Memory — Scratchpad
+
+```elixir
+alias HermesBeam.Memory.Scratchpad
+
+scratchpads = Ash.read!(Scratchpad)
+
+IO.puts("\n=== Scratchpad Contents ===")
+for pad <- scratchpads do
+  memory_pct = Float.round(String.length(pad.memory_text) / 2200 * 100, 1)
+  user_pct   = Float.round(String.length(pad.user_text) / 1375 * 100, 1)
+
+  IO.puts("""
+  Agent: #{pad.agent_id}
+    memory_text  [#{memory_pct}% of 2200]
+    user_text    [#{user_pct}% of 1375]
+  """)
+end
+
+scratchpads
+```
+
+```elixir
+query = "What has the agent learned about the user?"
+
+results =
+  HermesBeam.Memory.Episodic
+  |> Ash.Query.for_read(:recall_similar, %{query: query})
+  |> Ash.read!()
+
+IO.puts("\n=== Top-5 Memories for: '#{query}' ===")
+for mem <- results do
+  IO.puts("  [#{mem.type}] #{String.slice(mem.content, 0, 120)}...")
+end
+
+results
+```
+
+---
+
+## 3  Reactor Workflow Log
+
+```elixir
+alias HermesBeam.WorkflowLog
+
+recent_runs =
+  WorkflowLog
+  |> Ash.Query.sort(started_at: :desc)
+  |> Ash.Query.limit(25)
+  |> Ash.read!()
+
+IO.puts("\n=== Recent Workflow Runs ===")
+for run <- recent_runs do
+  duration =
+    if run.finished_at do
+      "#{DateTime.diff(run.finished_at, run.started_at, :millisecond)}ms"
+    else
+      "running..."
+    end
+  IO.puts("  [#{run.status}]  #{run.workflow_name}  |  #{duration}  |  #{run.started_at}")
+end
+
+recent_runs
+```
+
+---
+
+## 4  Skill Registry
+
+```elixir
+alias HermesBeam.Skill
+
+skills = Ash.read!(Skill, query: Ash.Query.sort(Skill, execution_count: :desc))
+
+IO.puts("\n=== Skills (#{length(skills)} total) ===")
+for skill <- skills do
+  rate_label =
+    cond do
+      skill.success_rate >= 0.9 -> "✅ #{Float.round(skill.success_rate * 100, 1)}%"
+      skill.success_rate >= 0.7 -> "⚠️  #{Float.round(skill.success_rate * 100, 1)}%"
+      true                      -> "❌ #{Float.round(skill.success_rate * 100, 1)}%"
+    end
+  IO.puts("  #{skill.name}  |  #{skill.execution_count}x  |  #{rate_label}")
+end
+
+skills
+```
+
+---
+
+## 5  Manual Actions
+
+```elixir
+# Manually trigger a SyntheticDataReactor run
+concept = "Erlang distribution and fault tolerance"
+
+Reactor.run(
+  HermesBeam.Workflows.SyntheticDataReactor,
+  %{concept_to_explore: concept}
+)
+|> IO.inspect(label: "SyntheticDataReactor")
+```
+
+```elixir
+# Run a single AgentLoop turn interactively
+agent_id = "paste-your-agent-uuid-here"
+prompt   = "What do you know about my coding preferences?"
+task     = :deep_reflection
+
+Reactor.run(
+  HermesBeam.Workflows.AgentLoop,
+  %{agent_id: agent_id, user_prompt: prompt, task_type: task}
+)
+|> IO.inspect(label: "AgentLoop")
+```
+
+---
+
+## 6  Raw Postgres Queries
+
+```elixir
+import Ecto.Query
+
+daily_counts =
+  from(m in "agent_memories",
+    select: %{
+      day: fragment("date_trunc('day', ?)", m.inserted_at),
+      count: count(m.id)
+    },
+    group_by: fragment("date_trunc('day', ?)", m.inserted_at),
+    order_by: [asc: fragment("date_trunc('day', ?)", m.inserted_at)]
+  )
+  |> HermesBeam.Repo.all()
+
+IO.puts("\n=== Episodic Memory Growth ===")
+for %{day: day, count: n} <- daily_counts do
+  bar = String.duplicate("█", min(n, 60))
+  IO.puts("  #{day}  #{String.pad_leading("#{n}", 5)}  #{bar}")
+end
+
+daily_counts
+```
