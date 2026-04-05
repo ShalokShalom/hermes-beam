@@ -93,17 +93,17 @@ Status legend: `[ ]` = Not started · `[~]` = In progress · `[x]` = Complete
   - [x] `name`, `description`, `elixir_code`, `module_name` attributes
   - [x] `execution_count`, `success_rate`, `last_executed_at` tracked attributes
   - [x] `:learn_skill` create action — triggers `CompileSkillModule`
-  - [x] `:refine_skill` update action — re-triggers compilation (called from Reactor undo)
+  - [x] `:refine_skill` update action — re-triggers compilation (Reactor undo)
   - [x] `:record_execution` update action — increments stats
   - [x] Unique identity on `:name`
 - [x] `HermesBeam.Changes.CompileSkillModule` Ash Change
   - [x] Wraps code in `HermesBeam.Skills.Dynamic.<Name>` namespace
-  - [x] Purges existing module version before recompile
-  - [x] `Code.compile_string/1` with rescue for `CompileError`, `SyntaxError`, `TokenMissingError`
+  - [x] Purges existing module before recompile
+  - [x] `Code.compile_string/1` with rescue for compile/syntax errors
   - [x] Returns Ash changeset error on failure (triggers Reactor undo)
 - [x] `:learn_skill` and `:refine_skill` exposed as LLM tools via `AshAi`
 - [x] Migration: `agent_skills` table
-- [x] `test/hermes_beam/changes/compile_skill_module_test.exs` — valid + invalid code
+- [x] `test/hermes_beam/changes/compile_skill_module_test.exs`
 - [ ] End-to-end test: agent generates skill, uses it on next turn
 
 **Exit Criteria:** Agent generates Elixir code, stores it in Postgres, compiles it live, and it passes `function_exported?/3`. ✅ (unit tests passing; end-to-end pending)
@@ -153,83 +153,97 @@ Status legend: `[ ]` = Not started · `[~]` = In progress · `[x]` = Complete
   - [ ] Step `:generate_synthetic_scenarios` — routes to `:tier_2_general`, requests 3 JSON scenarios
   - [ ] Step `:parse_scenarios` — `Jason.decode/1` with error handling
   - [ ] Step `:store_scenarios` — batch stores to `Episodic` with type `:synthetic`
-- [ ] Hub-only scheduled GenServer: triggers `SyntheticDataReactor` for low-confidence concept domains during idle periods
+- [ ] Hub-only scheduled GenServer: triggers `SyntheticDataReactor` for low-confidence domains during idle periods
 - [ ] Telemetry: emit `[:hermes_beam, :synthetic, :generated]` event per batch
 - [ ] Measure recall quality (cosine similarity scores) before and after a synthetic run
+- [ ] Livebook section 5 (Manual Actions) verified: dispatching `SyntheticDataReactor` from notebook works end-to-end
 
-**Exit Criteria:** After an idle period, the `Episodic` memory table grows with `:synthetic` type entries. A recall query returns at least one synthetic memory in top-5 results.
+**Exit Criteria:** After an idle period, the `Episodic` memory table grows with `:synthetic` type entries. A recall query returns at least one synthetic memory in the top-5 results.
 
 ---
 
-## Phase 7 — Phoenix LiveView Dashboard
+## Phase 7 — Livebook Observability Dashboard
 
-> **Objective:** A real-time, browser-based command centre on the Hub node covering cluster health, agent memory, workflow execution, skill evolution, and synthetic data progress.
+> **Objective:** Provide a real-time, interactive command centre for the cluster that requires zero additional web infrastructure — using Livebook attached directly to the Hub node as a sibling Erlang process.
+>
+> **Design decision:** Livebook is prioritised over a bespoke Phoenix LiveView dashboard because it delivers all required observability with no extra build pipeline, no JS assets, and no deployment step. Every notebook cell is a live RPC call into the running cluster. The Phoenix LiveView dashboard (Phase 7-LV below) remains as a future upgrade path for a persistent always-on UI.
 
-### 7.0 — Project Setup
+### 7.0 — Livebook Connection Infrastructure
 
-- [ ] Add `phoenix`, `phoenix_live_view`, `phoenix_html`, `esbuild`, `tailwind` (already in `mix.exs`)
-- [ ] `HermesBeamWeb.Endpoint`, `HermesBeamWeb.Telemetry` started as Hub-only children
-- [ ] Root layout (`root.html.heex`) with navbar: Cluster / Memory / Workflows / Skills / Synthetic
-- [ ] Tailwind CSS configured
+- [x] `notebooks/hermes_beam.livemd` — landing notebook with all six dashboard sections
+- [x] `bin/livebook_connect.sh` — launches Livebook pre-attached to Hub (`dev` and `prod` modes)
+- [ ] Verify `LIVEBOOK_DEFAULT_RUNTIME="attached:hermes@<ip>:<cookie>"` connects cleanly to Hub
+- [ ] Smoke-test: `Node.list()` in notebook returns all worker nodes
 
-**Exit Criteria:** `http://hub-tailscale-ip:4000` returns a styled HTML page with navigation.
+**Exit Criteria:** Running `bash bin/livebook_connect.sh` and opening `hermes_beam.livemd` shows live cluster node list without manual runtime configuration.
 
-### 7.1 — Cluster Health Dashboard
+### 7.1 — Cluster Status Section
 
-- [ ] `HermesBeamWeb.Live.ClusterLive` (`/dashboard/cluster`)
-- [ ] Node card grid: name, Tailscale IP, `NODE_ROLE`, online/degraded status
-- [ ] `Nx.Serving` table per node: tier, batch count, model repo
-- [ ] Live sparkline: inference requests/min via Telemetry
-- [ ] `HermesBeam.Telemetry.NodeMetrics` GenServer — polls + broadcasts via PubSub every 2s
-- [ ] Node card turns red within 5s of dropout (no refresh)
+- [x] `Node.list/0` + `:rpc.call/4` per node: `NODE_ROLE` and active `Nx.Serving` tiers
+- [ ] Verify output when a Worker node is offline (shows `unreachable` gracefully)
 
-**Exit Criteria:** Unplugging a Mac Mini causes its card to turn red within 5 seconds.
+**Exit Criteria:** Section 1 cells execute cleanly and reflect real cluster topology.
 
-### 7.2 — Agent Memory Explorer
+### 7.2 — Agent Memory Section
 
-- [ ] `HermesBeamWeb.Live.MemoryLive` (`/dashboard/memory`)
-- [ ] Scratchpad: side-by-side textareas with live character count + colour-coded limit warnings
-- [ ] Save button → calls `:curate_memory` Ash action with inline validation errors
-- [ ] Episodic search bar → `recall_similar/1` → top-5 cards with content, type badge, timestamp
-- [ ] Delete button per memory card
-- [ ] Filter tabs: `All | :observation | :reflection | :user_fact | :synthetic`
+- [x] Scratchpad read with live % meters for both character limits
+- [x] `recall_similar/1` pgvector search with configurable query string
+- [ ] Verify recall returns results after at least 5 memories are stored
 
-**Exit Criteria:** Operator can read, search, edit, and delete agent memories without IEx.
+**Exit Criteria:** Operator can inspect and search agent memory without IEx.
 
-### 7.3 — Reactor Workflow Log
+### 7.3 — Reactor Workflow Log Section
 
-- [ ] `HermesBeam.WorkflowLog` Ash Resource: `workflow_name`, `status`, `steps` (map), timestamps
+- [x] `WorkflowLog` query: sorted, limited, status + duration display
+- [ ] `HermesBeam.WorkflowLog` Ash Resource implemented (Phase 7.3 tracks this)
+  - [ ] `workflow_name`, `status`, `steps` (map), `started_at`, `finished_at`
+  - [ ] `:create`, `:update_step`, `:complete`, `:fail` actions
+  - [ ] Migration: `workflow_logs` table
 - [ ] Telemetry `attach/4` on all Reactor steps in `AgentLoop`, `IntelligentRouter`, `SyntheticDataReactor`
-- [ ] `HermesBeamWeb.Live.WorkflowLive` (`/dashboard/workflows`)
-- [ ] Live table: sorted by `started_at`, paginated (25/page), status badge column
-- [ ] Expandable rows: step-level horizontal bar chart (duration per step)
-- [ ] Live counters: `Running: N | Completed today: N | Failed today: N`
-- [ ] Retry button on failed rows — re-enqueues with original inputs
 
-**Exit Criteria:** Running `Reactor.run(AgentLoop, ...)` in IEx causes a new row in the dashboard within 1 second.
+**Exit Criteria:** Running `Reactor.run(AgentLoop, ...)` from Section 5 causes a new entry visible in Section 3 on next cell execution.
 
-### 7.4 — Skill Registry
+### 7.4 — Skill Registry Section
 
-- [ ] `HermesBeamWeb.Live.SkillsLive` (`/dashboard/skills`)
-- [ ] Card grid: name, description, `execution_count`, `success_rate` badge
-- [ ] Modal: syntax-highlighted code viewer for `elixir_code`
-- [ ] Edit mode: operator amends code → "Recompile" calls `:refine_skill`
-- [ ] Inline compilation error display
-- [ ] Delete button → `Ash.destroy/1` + unloads BEAM module
-- [ ] Sort: name / execution_count / success_rate / inserted_at
-- [ ] Filter: All / High Success >90% / Needs Improvement <70% / Never Used
+- [x] Skill listing with success rate badges
+- [x] Source code inspection cell
+- [ ] Verify badge logic after at least one skill with `success_rate < 0.7` exists
 
-**Exit Criteria:** New skill appears in registry within 2 seconds of creation with `execution_count: 0`.
+**Exit Criteria:** All skills visible with correct badges after at least 3 skills are created.
 
-### 7.5 — Synthetic Data Monitor
+### 7.5 — Manual Actions Section
 
-- [ ] `HermesBeamWeb.Live.SyntheticLive` (`/dashboard/synthetic`)
-- [ ] Bar chart: top 10 explored concepts by synthetic memory count
-- [ ] Line chart: total episodic memory count over 7 days
-- [ ] Manual trigger form: dispatch `SyntheticDataReactor` from browser
-- [ ] Live feed: last 10 generated synthetic memories, auto-updating via PubSub
+- [x] `SyntheticDataReactor` dispatch cell
+- [x] `AgentLoop` interactive run cell
+- [ ] Verify both cells produce output after Phases 4+5 hardware is online
 
-**Exit Criteria:** Dashboard reflects accurate memory count from Postgres and updates in real-time during generation.
+**Exit Criteria:** Both dispatch cells complete without error on a live cluster.
+
+### 7.6 — Raw Postgres Section
+
+- [x] Daily episodic memory growth query with terminal bar chart
+- [ ] Add synthetic concept breakdown query (top 10 concepts by count)
+
+**Exit Criteria:** Bar chart correctly reflects row counts from `agent_memories` table.
+
+---
+
+## Phase 7-LV — Phoenix LiveView Dashboard (Future Upgrade)
+
+> **Objective:** Replace the Livebook notebook with a persistent, always-on browser UI once the cluster is stable and operational. This phase is intentionally deferred until Phase 7 Livebook observability is fully verified on real hardware.
+
+### Setup
+- [ ] `HermesBeamWeb.Endpoint` and `HermesBeamWeb.Telemetry` started as Hub-only children (scaffold already in `Application`)
+- [ ] Root layout with navbar: Cluster / Memory / Workflows / Skills / Synthetic
+
+### Panels (map 1:1 to Livebook sections)
+- [ ] `ClusterLive` — node card grid with live sparklines and dropout detection
+- [ ] `MemoryLive` — Scratchpad editor + episodic search
+- [ ] `WorkflowLive` — live table with expandable step-level bar charts
+- [ ] `SkillsLive` — card grid with in-browser recompile
+- [ ] `SyntheticLive` — concept bar chart + manual trigger
+
+**Exit Criteria:** `http://hub-tailscale-ip:4000` shows live cluster state. Livebook notebook retired.
 
 ---
 
@@ -240,7 +254,7 @@ Status legend: `[ ]` = Not started · `[~]` = In progress · `[x]` = Complete
 - [ ] Automated Postgres backups (daily `pg_dump` to NAS or external drive)
 - [ ] `mix release` configured for Hub and Worker node types
 - [ ] `launchd` plist (macOS) for auto-start on Mac Minis
-- [ ] `systemd` unit (Linux/Windows) for auto-start on Gaming PC
+- [ ] `systemd` unit (Linux) for auto-start on Gaming PC
 - [ ] Tailscale ACLs: restrict to EPMD port (4369) and Postgres (5432) only
 - [ ] Erlang TLS distribution as secondary security layer over Tailscale
 - [ ] Rate limiting on Ash AI tool-calling actions (prevent runaway LLM loops)
@@ -253,8 +267,9 @@ Status legend: `[ ]` = Not started · `[~]` = In progress · `[x]` = Complete
 
 ## Future Considerations
 
-- **WASM Sandbox for Skills:** Evaluate running LLM-generated skill code inside an embedded WebAssembly runtime instead of directly on the BEAM for stronger isolation. Relevant authority: `wasmex` library (Elixir WASM bindings).
-- **Federated Memory:** Explore syncing anonymised memory patterns across multiple Hermes BEAM instances.
-- **MCP Server:** Expose agent capabilities as a Model Context Protocol server for IDE integrations (e.g. Cursor, Zed).
-- **Ada/SPARK Core:** Explore re-implementing EXLA NIF bindings in Ada/SPARK for formal verification of the inference pipeline.
+- **WASM Sandbox for Skills:** Run LLM-generated skill code inside an embedded WebAssembly runtime (`wasmex`) for stronger isolation.
+- **Federated Memory:** Sync anonymised memory patterns across multiple Hermes BEAM instances.
+- **MCP Server:** Expose agent capabilities as a Model Context Protocol server for IDE integrations (Cursor, Zed).
+- **Ada/SPARK Core:** Re-implement EXLA NIF bindings in Ada/SPARK for formal verification of the inference pipeline.
 - **Headscale:** Replace Tailscale coordination server with self-hosted [Headscale](https://github.com/juanfont/headscale) for fully air-gapped operation.
+- **`ash_livebook` Smart Cells:** Integrate [ash_livebook](https://github.com/ash-project/ash_livebook) Smart Cells into the notebook for visual Ash query building without raw Elixir.

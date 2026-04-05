@@ -6,15 +6,13 @@
 
 ## RADAR Assessment
 
-This document and the project itself are evaluated continuously against the **RADAR** framework to ensure accuracy, authority, and honest communication of intent.
-
 | Criterion | Assessment |
 | :--- | :--- |
 | **Relevance** | All design decisions directly serve one goal: a sovereign, self-improving AI agent that owns its own memory, skills, and compute. Every dependency has a concrete, non-replaceable role. |
-| **Authority** | Built entirely on mature, production-grade Elixir ecosystem libraries: Ash Framework (Zach Daniel / Alembic), Reactor, Nx/Bumblebee (José Valim / Elixir-Nx org), libcluster/libcluster_postgres (Supabase). |
-| **Date** | Actively developed. Phases 0–3 implemented April 2026. Phases 4–8 specified and in progress. All dependency versions are current as of Q2 2026. |
-| **Appearance** | Source code is fully documented with `@moduledoc`, tests are co-located with implementation, and every architectural decision is traceable to a ROADMAP phase with explicit Exit Criteria. |
-| **Reason for Writing** | To build — not just describe — a fully working distributed AI agent system. All documentation exists to drive implementation, not justify decisions after the fact. |
+| **Authority** | Built on mature, production-grade Elixir libraries: Ash Framework (Zach Daniel / Alembic), Reactor, Nx/Bumblebee (José Valim / Elixir-Nx org), libcluster/libcluster_postgres (Supabase). |
+| **Date** | Actively developed. Phases 0–3 implemented April 2026. Livebook observability layer added April 2026. All dependency versions current as of Q2 2026. |
+| **Appearance** | Source is fully documented with `@moduledoc`, tests co-located with implementation, every architectural decision traceable to a ROADMAP phase with explicit Exit Criteria. |
+| **Reason for Writing** | To build — not just describe — a fully working distributed AI agent system. All documentation drives implementation. |
 
 ---
 
@@ -39,7 +37,8 @@ This project follows **Documentation-Driven Development**: every feature is full
 | 4 | Multi-Tier Hardware Model Serving | 🟡 Config complete, integration pending |
 | 5 | Distributed Cluster (Tailscale + libcluster_postgres) | 🟡 Config complete, deployment pending |
 | 6 | Synthetic Data Generation | ⏳ Specified |
-| 7 | Phoenix LiveView Dashboard | ⏳ Specified |
+| 7 | Livebook Observability Dashboard | 🟡 Notebook + connect scripts committed |
+| 7-LV | Phoenix LiveView Dashboard (future upgrade) | ⏳ Specified, deferred post Phase 7 |
 | 8 | Hardening and Production Readiness | ⏳ Specified |
 
 See [`ROADMAP.md`](./ROADMAP.md) for full per-phase task lists and Exit Criteria.
@@ -56,6 +55,7 @@ See [`ROADMAP.md`](./ROADMAP.md) for full per-phase task lists and Exit Criteria
 | **LLM Provider** | External API (Hermes 3 via NousResearch) | Local `Nx.Serving` cluster via Bumblebee — zero external API dependency |
 | **Distribution** | None (single machine) | Multi-node Erlang cluster over Tailscale WireGuard mesh |
 | **Durability** | Restarts from scratch on crash | All state in Postgres; Reactor retries and compensates on failure |
+| **Observability** | None | Livebook notebook attached directly to Hub node as sibling Erlang process |
 | **Data Sovereignty** | LLM provider holds conversation history | 100% local — no data leaves your hardware unless you configure it to |
 
 ---
@@ -63,28 +63,28 @@ See [`ROADMAP.md`](./ROADMAP.md) for full per-phase task lists and Exit Criteria
 ## Architecture Overview
 
 ```
-┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                              Tailscale WireGuard Mesh                               │
-│                                                                                     │
-│   ┌────────────────────────────────────┐  ┌────────────────────────────────────┐   │
-│   │          CENTRAL HUB           │  │        COMPUTE WORKERS            │   │
-│   │   Gaming PC (NODE_TYPE=hub)    │  │   Mac Minis (NODE_TYPE=worker)   │   │
-│   │                                │  │                                  │   │
-│   │  PostgreSQL + pgvector         │  │  Nx.Serving :tier_3_docs         │   │
-│   │  libcluster_postgres           │  │  Nx.Serving :tier_2_general      │   │
-│   │  Nx.Serving :tier_1_reasoning  │  │  AgentLoop Reactor               │   │
-│   │  Nx.Serving :tier_2_general    │  │  Ash AI Actions                  │   │
-│   │  Phoenix LiveView Dashboard    │  │  Scratchpad / Episodic Memory    │   │
-│   │  AgentLoop Orchestrator        │  │  Skill Compilation               │   │
-│   └────────────────────────────────────┘  └────────────────────────────────────┘   │
-│                                                                                     │
-└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                    Tailscale WireGuard Mesh                                        │
+│                                                                                                     │
+│   ┌────────────────────────────────────┐  ┌────────────────────────────────────┐                  │
+│   │          CENTRAL HUB               │  │        COMPUTE WORKERS             │                  │
+│   │   Gaming PC (NODE_TYPE=hub)        │  │   Mac Minis (NODE_TYPE=worker)     │                  │
+│   │                                    │  │                                    │                  │
+│   │  PostgreSQL + pgvector             │  │  Nx.Serving :tier_3_docs           │                  │
+│   │  libcluster_postgres               │  │  Nx.Serving :tier_2_general        │                  │
+│   │  Nx.Serving :tier_1_reasoning      │  │  AgentLoop Reactor                 │                  │
+│   │  Nx.Serving :tier_2_general        │  │  Ash AI Actions                    │                  │
+│   │  AgentLoop Orchestrator            │  │  Scratchpad / Episodic Memory      │                  │
+│   │  Livebook (attached runtime)  ◄────┼──┼── your browser                     │                  │
+│   └────────────────────────────────────┘  └────────────────────────────────────┘                  │
+│                                                                                                     │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Node Roles
 
-- **Hub Node (`NODE_TYPE=hub`):** Hosts PostgreSQL, acts as the central cluster coordinator via `libcluster_postgres`, runs the heavy 70B reasoning model, and hosts the Phoenix LiveView dashboard.
-- **Worker Node (`NODE_TYPE=worker`):** Runs smaller models suited to its Apple Silicon tier, executes `AgentLoop` Reactor workflows, and stores all state remotely in the Hub's Postgres via Tailscale. Entirely stateless — safe to restart at any time.
+- **Hub Node (`NODE_TYPE=hub`):** Hosts PostgreSQL, acts as cluster coordinator, runs the heavy 70B reasoning model, and serves the Livebook notebook for live observability.
+- **Worker Node (`NODE_TYPE=worker`):** Runs smaller models for its Apple Silicon tier, executes `AgentLoop` Reactor workflows, stores all state remotely in the Hub's Postgres via Tailscale. Entirely stateless — safe to restart at any time.
 
 ---
 
@@ -96,7 +96,7 @@ See [`ROADMAP.md`](./ROADMAP.md) for full per-phase task lists and Exit Criteria
  NODE_ROLE=mac_mini_base →  Tier 3 (3B docs)
 ```
 
-Workloads are routed automatically via `IntelligentRouter`. If an agent on a Mac Mini requires deep reasoning (`:deep_reflection`), Reactor dispatches the request to the Gaming PC's 70B model over the Tailscale tunnel via `Nx.Serving.batched_run/2`. No code changes are required when hardware is added or removed.
+Workloads are routed automatically via `IntelligentRouter`. A Mac Mini calling `Nx.Serving.batched_run(:tier_1_reasoning, prompt)` automatically forwards the batch to the Gaming PC over the Tailscale tunnel. No code changes required when hardware is added or removed.
 
 ---
 
@@ -104,33 +104,40 @@ Workloads are routed automatically via `IntelligentRouter`. If an agent on a Mac
 
 ### 1. Agent Memory (`Ash AI + pgvector`) — ✅ Implemented
 
-Memory is split into two layers. The `Scratchpad` (`HermesBeam.Memory.Scratchpad`) is a bounded, LLM-curated working memory: two string fields (`memory_text` ≤ 2,200 chars, `user_text` ≤ 1,375 chars) that mirror Hermes Agent's `MEMORY.md` and `USER.md` files, but stored in Postgres for ACID safety and distributed consistency. The `Episodic` memory (`HermesBeam.Memory.Episodic`) grows over time and is queried semantically via pgvector cosine similarity using an IVFFlat index.
+Memory is split into two layers. The `Scratchpad` is a bounded LLM-curated working memory mirroring Hermes Agent's `MEMORY.md`/`USER.md` files, with hard character limits enforced by Ash validations. The `Episodic` memory grows over time and is queried semantically via pgvector cosine similarity with an IVFFlat approximate nearest-neighbour index.
 
 ### 2. Agent Workflows (`Reactor`) — ✅ Implemented
 
-Every agent action is a `Reactor` workflow — a declarative, concurrent DAG of steps. The `AgentLoop` implements the full Observe → Orient → Decide → Act → Reflect cycle. Steps can run concurrently, compensate via `undo` functions (saga pattern), and dynamically extend the graph at runtime by returning `{:ok, value, additional_steps}`.
+Every agent action is a `Reactor` workflow — a declarative, concurrent DAG. The `AgentLoop` implements the full Observe → Orient → Decide → Act → Reflect cycle. Steps can run concurrently, compensate via `undo` (saga pattern), and dynamically extend the graph at runtime.
 
 ### 3. Autonomous Skill Creation — ✅ Implemented
 
-The agent can generate Elixir code for repetitive tasks. Generated code is stored as a `Skill` resource in PostgreSQL, then compiled into a live BEAM module via `Code.compile_string/1` by the `CompileSkillModule` Ash Change. On compilation failure, Reactor's `undo` compensation triggers an LLM reflection prompt to rewrite the skill.
+The agent generates Elixir code for repetitive tasks. Code is stored in the `Skill` resource, compiled into a live BEAM module via `Code.compile_string/1` by `CompileSkillModule`, and on failure Reactor's undo triggers an LLM reflection prompt to rewrite.
 
-### 4. Cluster Discovery (`libcluster_postgres` + Tailscale) — 🟡 Config complete
+### 4. Cluster Discovery — 🟡 Config Complete
 
-Nodes register themselves in the central PostgreSQL database over the Tailscale mesh using `libcluster_postgres`. The `bin/start_node.sh` script auto-detects each machine's Tailscale IP and uses it as the Erlang node name, ensuring encrypted distribution traffic.
+Nodes register in PostgreSQL via `libcluster_postgres` over the Tailscale mesh. `bin/start_node.sh` auto-detects each machine's Tailscale IP as the Erlang node name.
 
-### 5. Model Serving (`Nx.Serving` + Bumblebee) — 🟡 Config complete
+### 5. Model Serving (`Nx.Serving` + Bumblebee) — 🟡 Config Complete
 
-Each node loads only the models appropriate for its hardware, determined by `NODE_ROLE` at boot. `Nx.Serving` with `partitions: true` enables transparent cross-node routing: a Mac Mini calling `Nx.Serving.batched_run(:tier_1_reasoning, prompt)` automatically forwards the tensor batch to the Gaming PC.
+Each node loads only the models for its hardware, determined by `NODE_ROLE` at boot.
 
 | Tier | Model | Hardware | Use Case |
 | :--- | :--- | :--- | :--- |
-| `:tier_1_reasoning` | Llama 3 70B | NVIDIA GPU (CUDA) | Deep reasoning, reflection, complex planning |
+| `:tier_1_reasoning` | Llama 3 70B | NVIDIA GPU (CUDA) | Deep reasoning, reflection, planning |
 | `:tier_2_general` | Llama 3 8B | Apple Silicon Pro / NVIDIA | General tasks, tool calling, synthetic data |
-| `:tier_3_docs` | Phi-3 Mini 4K | Apple Silicon Base | Documentation, formatting, JSON output |
+| `:tier_3_docs` | Phi-3 Mini 4K | Apple Silicon Base | Documentation, formatting, JSON |
 
-### 6. Phoenix LiveView Dashboard — ⏳ Specified (Phase 7)
+### 6. Livebook Observability — 🟡 Notebook Committed
 
-A real-time browser-based command centre on the Hub node. Covers: Cluster Health, Agent Memory Explorer, Reactor Workflow Log, Skill Registry, and Synthetic Data Monitor. See Phase 7 in `ROADMAP.md` for the full specification.
+Livebook attaches directly to the Hub node as a sibling Erlang process. Every cell in `notebooks/hermes_beam.livemd` is a live function call into the running cluster — no REST layer, no separate service.
+
+```bash
+bash bin/livebook_connect.sh        # dev  — auto-detects Tailscale IP
+bash bin/livebook_connect.sh prod   # prod — attaches to remote Hub over Tailscale
+```
+
+The notebook covers: Cluster Status, Agent Memory (Scratchpad + Episodic), Reactor Workflow Log, Skill Registry, Manual Action Dispatch, and Raw Postgres queries.
 
 ---
 
@@ -149,19 +156,21 @@ hermes-beam/
 │   ├── domain.ex           # Ash Domain (all resources registered here)
 │   ├── repo.ex             # AshPostgres Repo with pgvector extension
 │   ├── memory/
-│   │   ├── scratchpad.ex   # Bounded LLM-managed working memory (Hermes-style)
+│   │   ├── scratchpad.ex   # Bounded LLM-managed working memory
 │   │   └── episodic.ex     # Infinite pgvector semantic memory
 │   ├── skill.ex            # Autonomous skill resource (name, code, stats)
 │   ├── changes/
-│   │   └── compile_skill_module.ex  # Ash Change: LLM code → live BEAM module
+│   │   └── compile_skill_module.ex  # LLM code → live BEAM module
 │   ├── llm/
 │   │   ├── tier_supervisor.ex  # Dynamic supervisor for hardware-specific models
 │   │   └── model_worker.ex     # Bumblebee + EXLA Nx.Serving per tier
 │   └── workflows/
 │       ├── agent_loop.ex          # Observe → Orient → Decide → Act → Reflect
 │       ├── intelligent_router.ex  # Task type → hardware tier routing
-│       └── synthetic_data_reactor.ex # [Phase 6] Idle-time self-improvement
-├── lib/hermes_beam_web/    # [Phase 7] Phoenix LiveView dashboard (Hub only)
+│       └── synthetic_data_reactor.ex  # [Phase 6] Idle-time self-improvement
+├── lib/hermes_beam_web/    # [Phase 7-LV] Phoenix LiveView (deferred)
+├── notebooks/
+│   └── hermes_beam.livemd  # Livebook observability dashboard
 ├── priv/repo/migrations/   # Sequential Ecto migrations
 ├── test/
 │   ├── support/data_case.ex
@@ -169,7 +178,8 @@ hermes-beam/
 │       ├── memory/scratchpad_test.exs
 │       └── changes/compile_skill_module_test.exs
 ├── bin/
-│   └── start_node.sh       # Auto-detects Tailscale IP, boots Erlang node
+│   ├── start_node.sh           # Auto-detects Tailscale IP, boots Erlang node
+│   └── livebook_connect.sh     # Launches Livebook attached to Hub node
 ├── ROADMAP.md
 └── mix.exs
 ```
@@ -179,16 +189,17 @@ hermes-beam/
 ## Prerequisites
 
 - **Elixir** ~> 1.16 and **Erlang/OTP** ~> 26
-- **PostgreSQL** ~> 15 with the `pgvector` extension (`CREATE EXTENSION vector;`)
+- **PostgreSQL** ~> 15 with the `pgvector` extension
 - **Tailscale** installed and authenticated on all cluster machines
-- **EXLA** backend: NVIDIA CUDA 12+ (Gaming PC) or Apple Metal via MPS (Mac Minis)
+- **EXLA**: NVIDIA CUDA 12+ (Gaming PC) or Apple Metal via MPS (Mac Minis)
 - **HuggingFace** access token for gated models (`meta-llama/Meta-Llama-3-70B-Instruct`)
+- **Livebook** installed: `mix escript.install hex livebook`
 
 ---
 
 ## Quick Start
 
-### 1. Clone and install dependencies
+### 1. Clone and install
 
 ```bash
 git clone https://github.com/ShalokShalom/hermes-beam
@@ -199,20 +210,15 @@ mix deps.get
 ### 2. Set environment variables
 
 ```bash
-# Required on all machines
-export HUB_IP="100.x.x.x"          # Tailscale IP of your Hub (Gaming PC)
+export HUB_IP="100.x.x.x"           # Tailscale IP of your Hub (Gaming PC)
 export DB_USER="postgres"
 export DB_PASS="your_db_password"
 export DB_NAME="hermes_beam"
-
-# Optional: only needed for cloud LLM fallback
-export OPENAI_API_KEY="sk-..."
-
-# Required for gated HuggingFace models
+export COOKIE="your_secret_erlang_cookie"
 export HUGGING_FACE_HUB_TOKEN="hf_..."
 ```
 
-### 3. Set up the database (Hub machine only)
+### 3. Set up the database (Hub only)
 
 ```bash
 export NODE_TYPE=hub
@@ -222,23 +228,25 @@ mix ecto.create && mix ecto.migrate
 ### 4. Boot the Hub
 
 ```bash
-export NODE_TYPE=hub
-export NODE_ROLE=gaming_gpu
-export COOKIE=your_secret_erlang_cookie
+export NODE_TYPE=hub NODE_ROLE=gaming_gpu
 bash bin/start_node.sh
 ```
 
 ### 5. Boot each Worker (Mac Minis)
 
 ```bash
-export NODE_TYPE=worker
-export NODE_ROLE=mac_mini_pro   # or mac_mini_base
-export HUB_IP=100.x.x.x
-export COOKIE=your_secret_erlang_cookie
+export NODE_TYPE=worker NODE_ROLE=mac_mini_pro
 bash bin/start_node.sh
 ```
 
-### 6. Run tests
+### 6. Open the Livebook dashboard
+
+```bash
+bash bin/livebook_connect.sh
+# opens http://localhost:8080 with hermes_beam.livemd pre-loaded
+```
+
+### 7. Run tests
 
 ```bash
 mix test
@@ -248,23 +256,26 @@ mix test
 
 ## Design Decisions
 
-**Why Postgres for cluster discovery instead of Gossip?**
-Your agents strictly require Postgres for memory. Aligning the cluster discovery fault domain with the data fault domain means: if Postgres is down, nothing works anyway. Using `libcluster_postgres` avoids introducing a separate dependency (Redis, etcd, multicast networking) that could independently fail.
+**Why Livebook before Phoenix LiveView?**
+Livebook attaches as a sibling Erlang process — every cell is a live `Ash.read!` or `Reactor.run` call with zero extra infrastructure. Phoenix LiveView requires a full build pipeline, JS assets, PubSub wiring, and custom LiveView components before showing a single data point. Livebook delivers full observability immediately; LiveView is the upgrade path once the cluster is stable.
+
+**Why Postgres for cluster discovery?**
+Your agents require Postgres for memory. Aligning cluster discovery fault domain with the data fault domain means: if Postgres is down, nothing works anyway. `libcluster_postgres` avoids introducing a separate dependency (Redis, etcd, multicast) that could independently fail.
 
 **Why Tailscale instead of raw Erlang distribution?**
-Erlang distribution traffic is unencrypted by default. Between machines you personally own, Tailscale provides WireGuard-level encryption with zero certificate management. Any device with Tailscale and the shared cookie can join the cluster from anywhere, enabling nomadic operation.
+Erlang distribution traffic is unencrypted by default. Tailscale provides WireGuard-level encryption with zero certificate management, and any device with Tailscale and the shared cookie can join the cluster from anywhere.
 
 **Why bounded Scratchpad instead of only pgvector?**
-Forcing the agent to curate its own memory under a hard character limit produces a qualitatively different agent behaviour: it learns *what is worth remembering* rather than accumulating noise. The bounded model mirrors Hermes Agent's original design philosophy while gaining distributed safety from Postgres.
+Forcing the agent to curate its own memory under a hard character limit produces qualitatively better agent behaviour: it learns *what is worth remembering* rather than accumulating noise.
 
-**Why `Code.compile_string/1` instead of a sandboxed runtime?**
-For the initial implementation, speed and native BEAM integration outweigh isolation concerns in a private home lab. The WASM sandbox approach is tracked in `ROADMAP.md → Future Considerations` and will be evaluated in a later phase.
+**Why `Code.compile_string/1` instead of a sandbox?**
+For a private home lab, speed and native BEAM integration outweigh isolation concerns. The WASM sandbox approach is tracked in Future Considerations.
 
 ---
 
 ## Contributing
 
-Contributions welcome. Please read the ROADMAP before opening a PR — all new features should trace back to a specified phase and satisfy its Exit Criteria before merging.
+All new features must trace back to a ROADMAP phase and satisfy its Exit Criteria before merging.
 
 ---
 
